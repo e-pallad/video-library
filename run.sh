@@ -4,7 +4,10 @@ cd "$(dirname "$0")"
 if [ ! -d .venv ]; then
   python3 -m venv .venv
   .venv/bin/python -m pip install --upgrade pip
-  .venv/bin/python -m pip install -r requirements.txt
+fi
+# Install the dependencies on the first run, and again whenever requirements.txt changes.
+if ! cmp -s requirements.txt .venv/requirements.txt; then
+  .venv/bin/python -m pip install -r requirements.txt && cp requirements.txt .venv/requirements.txt
 fi
 if [ -n "$1" ]; then
   folder="$1"; shift

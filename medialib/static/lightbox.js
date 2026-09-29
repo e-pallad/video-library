@@ -9,7 +9,7 @@ export function isLightboxOpen() { return !!state; }
 
 /**
  * @param {object} source  { items: [...], index, total, loadMore: async () => newItems[] }
- * @param {object} hooks   { onTagClick(tag), onChange(item), openExternal(item, reveal) }
+ * @param {object} hooks   { onTagClick(tag), onChange(item), openExternal(item, reveal), deleteItem: async (item) => deleted? }
  */
 export function openLightbox(source, hooks = {}) {
   closeLightbox();
@@ -40,6 +40,7 @@ export function openLightbox(source, hooks = {}) {
       playBtn, intervalSel,
       infoBtn,
       btn('external', 'Open in default app', () => hooks.openExternal?.(cur())),
+      hooks.deleteItem ? btn('trash', 'Delete (Del)', () => deleteCurrent(), 'danger') : null,
       btn('close', 'Close (Esc)', () => closeLightbox()),
     ));
   const prevBtn = btn('left', 'Previous (←)', () => go(-1), 'lb-nav lb-prev');
@@ -101,6 +102,7 @@ export function openLightbox(source, hooks = {}) {
     else if (k === 'i' || k === 'I') toggleInfo();
     else if (k === 't' || k === 'T') { if (!state.info) toggleInfo(); setTimeout(() => state?.editor?.focusInput(), 50); }
     else if (k === 'f' || k === 'F') { document.fullscreenElement ? document.exitFullscreen() : root.requestFullscreen().catch(() => {}); }
+    else if (k === 'Delete' && state.hooks.deleteItem) deleteCurrent();
     else return;
     e.preventDefault();
     e.stopImmediatePropagation();
@@ -177,6 +179,24 @@ function show(i) {
   }
   api(`/api/media/${item.id}/view`, { method: 'POST' }).catch(() => {});
   if (s.timer) restartProgress();
+}
+
+async function deleteCurrent() {
+  const s = state;
+  const item = cur();
+  stopSlideshow();
+  if (!(await s.hooks.deleteItem(item)) || state !== s) return;
+  const items = s.source.items;
+  const i = items.indexOf(item);
+  if (i >= 0) items.splice(i, 1);
+  // Show the next image (loading more if the deleted one was the last loaded), else the previous one.
+  const at = i >= 0 ? i : s.index;
+  if (at >= items.length && s.source.loadMore && items.length < (s.source.total ?? Infinity)) {
+    await s.source.loadMore();
+    if (state !== s) return;
+  }
+  if (!items.length) closeLightbox();
+  else show(Math.min(at, items.length - 1));
 }
 
 function renderStrip() {

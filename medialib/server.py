@@ -6,13 +6,14 @@ import subprocess
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import anyio
 from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, playback, search, thumbs
+from . import __version__, playback, search, thumbs, trash
 from .config import default_data_dir
 from .ffmpeg import ffmpeg_exe
 from .db import Database, TagError
@@ -28,6 +29,26 @@ for _ext, _type in {
     mimetypes.add_type(_type, _ext)
 
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+class MediaFileResponse(FileResponse):
+    """A FileResponse that closes the file as soon as the browser goes away.
+
+    After a disconnect (the player seeks or stops) Starlette keeps reading to the end of the
+    requested range, which holds a big video open for seconds, and Windows can't delete open files.
+    """
+
+    async def __call__(self, scope, receive, send):
+        async def stop_on_disconnect():
+            while (await receive())["type"] != "http.disconnect":
+                pass
+            tg.cancel_scope.cancel()
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(stop_on_disconnect)
+            await super().__call__(scope, receive, send)
+            tg.cancel_scope.cancel()
 
 
 def create_app(data_dir=None, allow_remote=False, scan_on_start=True):
@@ -57,6 +78,12 @@ def create_app(data_dir=None, allow_remote=False, scan_on_start=True):
             host = request.url.hostname or ""
             if host not in LOCAL_HOSTS and host != "testserver":
                 return JSONResponse({"detail": "Forbidden host"}, status_code=403)
+        # Refuse changes (like deleting files) requested by other websites: browsers send
+        # an Origin header with those, and it names the other site.
+        origin = request.headers.get("origin")
+        if request.method not in SAFE_METHODS and origin is not None:
+            if urlsplit(origin).netloc.lower() != request.headers.get("host", "").lower():
+                return JSONResponse({"detail": "Cross-site request refused"}, status_code=403)
         return await call_next(request)
 
     # -- helpers -----------------------------------------------------------
@@ -107,11 +134,16 @@ def create_app(data_dir=None, allow_remote=False, scan_on_start=True):
     @app.get("/api/media")
     def list_media(q: str = "", type: str | None = None, sort: str = "newest", offset: int = 0,
                    limit: int = 60, seed: int = 1, filter: str | None = None):
-        limit = max(1, min(limit, 500))
+        limit, offset = max(1, min(limit, 500)), max(0, offset)
         sql, params, count_sql, count_params, parsed = search.build_sql(
-            q, kind=type, sort=sort, limit=limit, offset=max(0, offset), seed=seed, watched=filter)
-        rows = [dict(r) for r in db.query(sql, params)]
-        total = db.query_one(count_sql, count_params)[0]
+            q, kind=type, sort=sort, limit=limit, offset=offset, seed=seed, watched=filter)
+        if sort == "random":
+            matches = db.query(sql, params)
+            total = len(matches)
+            rows = db.get_media_many(search.mixed_order(matches, seed)[offset:offset + limit])
+        else:
+            rows = [dict(r) for r in db.query(sql, params)]
+            total = db.query_one(count_sql, count_params)[0]
         return {
             "items": serialize(rows), "total": total, "offset": offset, "limit": limit,
             "query": {"tags": parsed.include_tags, "exclude_tags": parsed.exclude_tags,
@@ -203,8 +235,8 @@ def create_app(data_dir=None, allow_remote=False, scan_on_start=True):
     def media_file(media_id: int):
         path = require_file(media_id)
         media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
-        return FileResponse(path, media_type=media_type, content_disposition_type="inline",
-                            filename=os.path.basename(path))
+        return MediaFileResponse(path, media_type=media_type, content_disposition_type="inline",
+                                 filename=os.path.basename(path))
 
     @app.get("/api/media/{media_id}/thumb")
     def media_thumb(media_id: int):
@@ -270,6 +302,40 @@ def create_app(data_dir=None, allow_remote=False, scan_on_start=True):
         result = tag_error(db.bulk_tags, ids, body.get("add", []), body.get("remove", []))
         return {"tags": {str(k): v for k, v in result.items()}}
 
+    @app.post("/api/media/bulk-delete")
+    def bulk_delete(body: dict = Body(...)):
+        """Delete files from disk: to the Recycle Bin/Trash, or for good with ``permanent``.
+
+        Files that fail are listed with the reason; ``can_force`` says that deleting them
+        permanently may still work.
+        """
+        ids = body.get("ids")
+        if not isinstance(ids, list) or not all(type(i) is int for i in ids):
+            raise HTTPException(400, "Expected {ids: [numbers]}")
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            raise HTTPException(400, "No items selected")
+        permanent = bool(body.get("permanent"))
+        deleted, failed = [], []
+        for media_id in ids:
+            path, _ = db.get_media_path(media_id)
+            if path is None:
+                failed.append({"id": media_id, "error": "Not in the library", "can_force": False})
+                continue
+            streams.stop(media_id)  # a running conversion keeps the file open
+            try:
+                trash.delete_file(path, permanent=permanent)
+            except OSError as e:
+                failed.append({"id": media_id, "error": trash.describe(e),
+                               "can_force": isinstance(e, trash.TrashFailed)})
+                continue
+            db.mark_deleted(media_id)
+            (thumbs_dir / f"{media_id}.jpg").unlink(missing_ok=True)
+            for sub in subs_dir.glob(f"{media_id}-*.vtt"):
+                sub.unlink(missing_ok=True)
+            deleted.append(media_id)
+        return {"deleted": deleted, "failed": failed}
+
     @app.post("/api/media/{media_id}/open")
     def open_external(media_id: int, body: dict = Body(default={})):
         """Open the file in the OS default app, or reveal it in the file manager."""
@@ -322,7 +388,7 @@ def create_app(data_dir=None, allow_remote=False, scan_on_start=True):
     @app.get("/api/settings")
     def get_settings():
         return {"roots": db.get_setting("roots", []), "data_dir": str(data_dir),
-                "ffmpeg": bool(ffmpeg_exe()), "version": __version__}
+                "ffmpeg": bool(ffmpeg_exe()), "trash": trash.trash_name(), "version": __version__}
 
     @app.put("/api/settings")
     def put_settings(body: dict = Body(...)):

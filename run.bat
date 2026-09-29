@@ -5,7 +5,10 @@ if not exist .venv (
   echo Creating virtual environment...
   py -3 -m venv .venv || python -m venv .venv
   .venv\Scripts\python -m pip install --upgrade pip
-  .venv\Scripts\python -m pip install -r requirements.txt
+)
+rem Install the dependencies on the first run, and again whenever requirements.txt changes.
+fc /b requirements.txt .venv\requirements.txt >nul 2>&1 || (
+  .venv\Scripts\python -m pip install -r requirements.txt && copy /y requirements.txt .venv\requirements.txt >nul
 )
 if "%~1"=="" (
   .venv\Scripts\python -m medialib

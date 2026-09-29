@@ -1,5 +1,11 @@
+import errno
+import os
+import shutil
+
+import pytest
 from fastapi.testclient import TestClient
 
+from medialib import trash
 from medialib.server import create_app
 
 from .conftest import make_video
@@ -144,3 +150,110 @@ def test_mkv_stream_and_subtitles(tmp_path):
         assert r.status_code == 200 and r.headers["content-type"] == "video/mp4"
         assert r.headers["x-playback-mode"] == "transcode"
         assert r.content[4:8] == b"ftyp" and len(r.content) > 1000
+
+
+@pytest.fixture
+def fake_trash(tmp_path, monkeypatch):
+    """Stand-in for the OS trash so tests don't fill the real one."""
+    bin_dir = tmp_path / "trash-bin"
+    bin_dir.mkdir()
+
+    def send2trash(path):
+        shutil.move(path, bin_dir / os.path.basename(path))
+
+    monkeypatch.setattr(trash, "send2trash", send2trash)
+    return bin_dir
+
+
+def test_delete_moves_file_to_trash_and_restore_keeps_tags(tmp_path, library, fake_trash):
+    with client(tmp_path / "data") as c:
+        c.put("/api/settings", json={"roots": [str(library)]})
+        scan(c)
+        items = ids_by_name(c)
+        beach = items["beach.jpg"]
+        c.put(f"/api/media/{beach}/tags", json={"tags": ["sea"]})
+        thumb = tmp_path / "data" / "thumbs" / f"{beach}.jpg"
+        assert thumb.exists()
+
+        r = c.post("/api/media/bulk-delete", json={"ids": [beach]})
+        assert r.status_code == 200 and r.json() == {"deleted": [beach], "failed": []}
+        assert not (library / "holiday" / "beach.jpg").exists()
+        assert (fake_trash / "beach.jpg").exists()
+        assert not thumb.exists()
+        assert set(ids_by_name(c)) == {"sunset.png", "cat.webp"}
+        assert set(ids_by_name(c, sort="random")) == {"sunset.png", "cat.webp"}
+        assert {t["name"]: t["count"] for t in c.get("/api/tags").json()} == {"sea": 0}
+
+        # Restored from the trash: a rescan brings it back with its tags and a new thumbnail.
+        shutil.move(fake_trash / "beach.jpg", library / "holiday" / "beach.jpg")
+        scan(c)
+        assert ids_by_name(c)["beach.jpg"] == beach
+        detail = c.get(f"/api/media/{beach}").json()
+        assert [t["name"] for t in detail["tags"]] == ["sea"] and detail["thumb"]
+        assert thumb.exists()
+
+
+def test_delete_permanently_when_trash_fails(tmp_path, library, monkeypatch):
+    def broken_trash(path):
+        raise OSError(errno.EXDEV, "No trash on this drive")
+
+    monkeypatch.setattr(trash, "send2trash", broken_trash)
+    monkeypatch.setattr(trash.time, "sleep", lambda s: None)
+    with client(tmp_path / "data") as c:
+        c.put("/api/settings", json={"roots": [str(library)]})
+        scan(c)
+        cat = ids_by_name(c)["cat.webp"]
+        r = c.post("/api/media/bulk-delete", json={"ids": [cat, 999]}).json()
+        assert r["deleted"] == []
+        assert r["failed"] == [
+            {"id": cat, "error": "No trash on this drive", "can_force": True},
+            {"id": 999, "error": "Not in the library", "can_force": False},
+        ]
+        assert (library / "cat.webp").exists()
+
+        r = c.post("/api/media/bulk-delete", json={"ids": [cat], "permanent": True}).json()
+        assert r == {"deleted": [cat], "failed": []}
+        assert not (library / "cat.webp").exists()
+        assert "cat.webp" not in ids_by_name(c)
+
+
+def test_delete_without_send2trash(tmp_path, library, monkeypatch):
+    monkeypatch.setattr(trash, "send2trash", None)
+    with client(tmp_path / "data") as c:
+        c.put("/api/settings", json={"roots": [str(library)]})
+        scan(c)
+        assert c.get("/api/settings").json()["trash"] is None
+        cat = ids_by_name(c)["cat.webp"]
+        failed = c.post("/api/media/bulk-delete", json={"ids": [cat]}).json()["failed"]
+        assert failed[0]["can_force"] and (library / "cat.webp").exists()
+
+
+def test_delete_input_and_cross_site_requests(tmp_path, library, fake_trash):
+    with client(tmp_path / "data") as c:
+        c.put("/api/settings", json={"roots": [str(library)]})
+        scan(c)
+        cat = ids_by_name(c)["cat.webp"]
+        assert c.post("/api/media/bulk-delete", json={"ids": []}).status_code == 400
+        assert c.post("/api/media/bulk-delete", json={"ids": "12"}).status_code == 400
+        # Another website can't make the browser delete files (or change anything else).
+        for origin in ("http://evil.example.com", "null"):
+            r = c.post("/api/media/bulk-delete", json={"ids": [cat]}, headers={"Origin": origin})
+            assert r.status_code == 403
+            assert c.put(f"/api/media/{cat}/tags", json={"tags": ["x"]}, headers={"Origin": origin}).status_code == 403
+        assert (library / "cat.webp").exists()
+        # The app's own page may.
+        r = c.post("/api/media/bulk-delete", json={"ids": [cat]}, headers={"Origin": "http://testserver"})
+        assert r.json()["deleted"] == [cat]
+
+
+def test_windows_network_drives_ask_before_deleting_permanently(monkeypatch):
+    calls = []
+    monkeypatch.setattr(trash, "send2trash", calls.append)
+    monkeypatch.setattr(trash.os.path, "lexists", lambda p: True)
+    monkeypatch.setattr(trash.sys, "platform", "win32")
+    # Windows would silently delete these for good, so the app must ask first.
+    for path in (r"\\nas\media\clip.mp4", "//nas/media/clip.mp4"):
+        with pytest.raises(trash.TrashFailed, match="network drives"):
+            trash.delete_file(path)
+    trash.delete_file(r"C:\Videos\clip.mp4")  # a local drive (no windll here, so treated as local)
+    assert calls == [r"C:\Videos\clip.mp4"]
