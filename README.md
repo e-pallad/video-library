@@ -8,7 +8,8 @@ Everything runs on your computer. Nothing is uploaded, and your files are never 
 
 ## Features
 
-- **Library grid.** Videos and images are shown together with thumbnails, durations and a watched-progress bar. Hovering over a video plays a preview. The grid loads more as you scroll, and you can sort by date, name, length, size, views or shuffle.
+- **Separate views for videos and images.** **Videos** and the **Gallery** (images) are never mixed. Search, tag filters, "Up next" and related items all stay within one kind.
+- **Video grid.** Thumbnails, durations and a watched-progress bar. Hovering over a video plays a preview. The grid loads more as you scroll, and you can sort by date, name, length, size, views or shuffle.
 - **Video player.** It plays MKV, AVI, HEVC and other formats by converting them on the fly (see *Supported formats*). A YouTube-style watch page with:
   - custom controls: seek bar with time preview, volume, speed 0.25–2×, loop, theater mode, fullscreen, picture-in-picture,
   - an autoplay-next toggle and an "Up next" list,
@@ -23,8 +24,8 @@ Everything runs on your computer. Nothing is uploaded, and your files are never 
 - **Tags.**
   - **Adding tags:** autocomplete reuses existing tags (case-insensitive), and new tags are created as you type.
   - **Bulk tagging:** press *Select*, click items (Shift-click selects a range), then add or remove a tag.
-  - **Tag manager:** rename, merge (rename onto an existing name), recolour, delete.
-  - **Tag sidebar:** click a tag to filter; right-click to exclude it.
+  - **Tag manager:** rename, merge (rename onto an existing name), recolour, delete. Click a tag's video or image count to see those items.
+  - **Tag sidebar:** shows the tags used in the current view (videos or images) with their counts. Click a tag to filter; right-click to exclude it.
 - **Search.** Combine tags and text. See below.
 - **Rescans keep your tags.** A file that is renamed or moved inside your library keeps its tags. Its identity comes from its size plus a hash of its content, not its path. A deleted file is hidden, but its tags come back if the file returns.
 - Dark and light themes, keyboard shortcuts, and a layout that works on a phone.
@@ -66,7 +67,8 @@ devices on your network use it. Only do that on a network you trust, because the
 
 ## Searching
 
-Type in the search bar. All terms must match.
+Type in the search bar. All terms must match. The search runs in the view you are in: Videos or Gallery.
+If items of the other kind also match, a link above the results (e.g. *2 images also match*) opens the same search in that view.
 
 | You type | Finds |
 |---|---|
@@ -76,7 +78,7 @@ Type in the search bar. All terms must match.
 | `#cats -#blurry` | Tagged cats but **not** blurry |
 | `tag:"road trip"` | Tags that contain spaces |
 | `-draft` | Hides anything whose name, folder or tags contain "draft" |
-| `type:video` / `type:image` | Only videos or only images |
+| `type:video` / `type:image` | Switches to the Videos or Gallery view |
 
 When you type `#`, matching tags are suggested. Picking one turns it into a chip. Click a chip to
 switch between include and exclude. You can also click any tag chip on a card, the tag pills above

@@ -1,7 +1,7 @@
 // Main application: routing, library grid, gallery, watch page, tag manager and settings.
 
-import { $, $$, api, debounce, fmtAgo, fmtDate, fmtDuration, fmtSize, h, icon, store, tagColor, toast } from './util.js';
-import { autocomplete, parseQuery, searchBar, tagChip, tagEditor, tagStore } from './tags.js';
+import { $, $$, api, debounce, fmtAgo, fmtDate, fmtDuration, fmtSize, h, icon, quoteTag, store, tagColor, toast } from './util.js';
+import { autocomplete, buildQuery, parseQuery, searchBar, tagChip, tagEditor, tagStore } from './tags.js';
 import { createPlayer } from './player.js';
 import { closeLightbox, isLightboxOpen, openLightbox } from './lightbox.js';
 
@@ -16,17 +16,37 @@ const S = {
   selected: new Set(),
   settings: null,
   player: null,
+  kind: 'video',        // media kind of the last videos/images view; searches and the sidebar tags follow it
 };
 
 // ---------------------------------------------------------------------------
 // Routing
 
+// Videos and images are never listed together: every listing shows exactly one kind.
 const LISTINGS = {
-  '': { title: 'Home', type: null, layout: 'grid' },
   videos: { title: 'Videos', type: 'video', layout: 'grid' },
   gallery: { title: 'Gallery', type: 'image', layout: 'justified' },
   continue: { title: 'Continue watching', type: 'video', layout: 'grid', filter: 'in_progress', sort: 'recent' },
 };
+const KIND_VIEW = { video: 'videos', image: 'gallery' };
+const KIND_LABEL = { video: ['video', 'videos'], image: ['image', 'images'] };
+const plural = (n, kind) => `${n.toLocaleString()} ${KIND_LABEL[kind][n === 1 ? 0 : 1]}`;
+const kindCount = (t, kind = S.kind) => (kind === 'image' ? t.images : t.videos);
+const tagQuery = (t) => `tag:${quoteTag(t.name)}`;
+
+// Which listing a search runs in: the given one, unless the query asks for the other kind with
+// "type:"; that token is then dropped because the view itself does the filtering.
+function searchTarget(name, q) {
+  const p = parseQuery(q);
+  if (!p.kind) return { name, q };
+  return { name: LISTINGS[name]?.type === p.kind ? name : KIND_VIEW[p.kind], q: buildQuery(p.chips, p.text) };
+}
+
+function setKind(kind) {
+  if (kind === S.kind) return;
+  S.kind = kind;
+  renderSidebarTags();
+}
 
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
@@ -61,11 +81,16 @@ async function route() {
   teardown();
   if (document.body.classList.contains('select-mode')) setSelectMode(false);
   S.route = r;
-  $$('.sidebar a').forEach((a) => a.classList.toggle('active', a.dataset.nav === (r.name || 'home')));
+  $$('.sidebar a').forEach((a) => a.classList.toggle('active', a.dataset.nav === r.name));
   document.body.classList.toggle('watching', r.name === 'watch');
   view.scrollTop = 0;
   window.scrollTo(0, 0);
 
+  if (r.name === '') {
+    // Home (and old links to the former mixed listing) opens the videos, or the gallery for images.
+    const t = searchTarget(KIND_VIEW[r.params.get('type')] || 'videos', r.params.get('q') || '');
+    return navigate(t.name, { q: t.q }, { replace: true });
+  }
   if (r.name in LISTINGS) {
     search.set(r.params.get('q') || '');
     return renderListing(r);
@@ -73,7 +98,7 @@ async function route() {
   if (r.name === 'watch') return renderWatch(+r.arg);
   if (r.name === 'tags') return renderTagsPage();
   if (r.name === 'settings') return renderSettings();
-  navigate('', {}, { replace: true });
+  navigate('videos', {}, { replace: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -81,23 +106,27 @@ async function route() {
 
 const search = searchBar({
   onSearch(q) {
+    // Search within the current view; from the watch page, tags or settings, within the last one.
     const r = S.route || { name: '' };
-    const name = r.name in LISTINGS ? r.name : '';
-    const params = name in LISTINGS ? Object.fromEntries(r.params) : {};
-    navigate(name, { ...params, q });
+    const t = searchTarget(r.name in LISTINGS ? r.name : KIND_VIEW[S.kind], q);
+    navigate(t.name, { ...(t.name === r.name ? Object.fromEntries(r.params) : {}), q: t.q });
   },
 });
 
 function renderSidebarTags() {
   const filter = $('#tag-filter').value.trim().toLowerCase();
   const list = $('#tag-list');
-  const tags = tagStore.tags.filter((t) => t.count > 0 && (!filter || t.name.toLowerCase().includes(filter)));
+  // Only tags used by the current kind, counting only that kind, so every tag here finds something.
+  const tags = tagStore.tags.filter((t) => kindCount(t) > 0 && (!filter || t.name.toLowerCase().includes(filter)));
   list.replaceChildren(...tags.map((t) => h('a', {
-    href: '#', class: 'tag-link', title: `${t.name} — click to filter, right-click to exclude`,
+    href: '#', class: 'tag-link', title: `${t.name}: ${plural(kindCount(t), S.kind)} — click to filter, right-click to exclude`,
     onclick: (e) => { e.preventDefault(); search.addChip(t.name, e.altKey); },
     oncontextmenu: (e) => { e.preventDefault(); search.addChip(t.name, true); },
-  }, h('span', { class: 'dot', style: { '--tag': tagColor(t) } }), h('span', { class: 'tag-link-name' }, t.name), h('span', { class: 'tag-link-count' }, t.count))));
-  if (!tags.length) list.append(h('div', { class: 'muted small pad' }, tagStore.tags.length ? 'No matching tags' : 'No tags yet — open any video or image and add some.'));
+  }, h('span', { class: 'dot', style: { '--tag': tagColor(t) } }), h('span', { class: 'tag-link-name' }, t.name), h('span', { class: 'tag-link-count' }, kindCount(t)))));
+  if (!tags.length) {
+    list.append(h('div', { class: 'muted small pad' }, filter ? 'No matching tags'
+      : tagStore.tags.some((t) => t.count > 0) ? `No ${KIND_LABEL[S.kind][1]} are tagged yet.` : 'No tags yet — open any video or image and add some.'));
+  }
 }
 tagStore.subscribe(renderSidebarTags);
 $('#tag-filter').addEventListener('input', renderSidebarTags);
@@ -162,37 +191,36 @@ $('#rescan-btn').addEventListener('click', async () => {
 async function renderListing(r) {
   const cfg = LISTINGS[r.name];
   const q = r.params.get('q') || '';
-  const sort = r.params.get('sort') || cfg.sort || store.get(`sort.${r.name || 'home'}`, 'newest');
-  const type = cfg.type || r.params.get('type') || null;
+  const sort = r.params.get('sort') || cfg.sort || store.get(`sort.${r.name}`, 'newest');
+  const type = cfg.type;
   const seed = +(r.params.get('seed') || 0) || Math.floor(Math.random() * 1e6) + 1;
 
   if (!S.settings) S.settings = await api('/api/settings').catch(() => ({ roots: [] }));
   if (!S.settings.roots.length) return renderWelcome();
+  setKind(type);
 
   const L = S.listing = {
     cfg, q, sort, type, seed, items: [], total: null, loading: false, name: r.name,
     reload: (keep) => { if (keep && L.items.length) refreshLoaded(); else navigate(r.name, Object.fromEntries(r.params), { replace: true }); },
   };
 
-  // Header: title, type chips, popular tags, sort, select.
-  const sortSel = h('select', { class: 'select', title: 'Sort', onchange: () => { store.set(`sort.${r.name || 'home'}`, sortSel.value); navigate(r.name, { ...Object.fromEntries(r.params), sort: sortSel.value, seed: sortSel.value === 'random' ? seed : '' }); } },
+  // Header: title, popular tags, sort, select.
+  const sortSel = h('select', { class: 'select', title: 'Sort', onchange: () => { store.set(`sort.${r.name}`, sortSel.value); navigate(r.name, { ...Object.fromEntries(r.params), sort: sortSel.value, seed: sortSel.value === 'random' ? seed : '' }); } },
     [['newest', 'Newest'], ['oldest', 'Oldest'], ['added', 'Recently added'], ['name', 'Name A–Z'], ['name_desc', 'Name Z–A'],
      ['recent', 'Recently watched'], ['most_viewed', 'Most viewed'], ['longest', 'Longest'], ['shortest', 'Shortest'], ['largest', 'Largest'], ['random', 'Shuffle']]
       .map(([v, l]) => h('option', { value: v, selected: v === sort }, l)));
   const count = h('span', { class: 'result-count muted' });
-  const typeChips = r.name === '' ? h('div', { class: 'chipbar-group' },
-    [[null, 'All'], ['video', 'Videos'], ['image', 'Images']].map(([t, l]) => h('button', {
-      class: 'pill' + ((type || null) === t ? ' active' : ''),
-      onclick: () => navigate('', { ...Object.fromEntries(r.params), type: t || '' }),
-    }, l))) : null;
+  // A search that also matches the other kind links to it, since that view is where those items are.
+  const other = type === 'video' ? 'image' : 'video';
+  const otherLink = h('a', { class: 'pill', hidden: true, href: hashFor(KIND_VIEW[other], { q }), title: `Show them in ${LISTINGS[KIND_VIEW[other]].title}` });
   const tagPills = h('div', { class: 'chipbar-group tag-pills' });
   const renderPills = () => {
     const included = new Set(parseQuery(q).chips.filter((c) => !c.exclude).map((c) => c.name.toLowerCase()));
-    tagPills.replaceChildren(...tagStore.tags.filter((t) => t.count > 0)
-      .sort((a, b) => b.count - a.count).slice(0, 20)
+    tagPills.replaceChildren(...tagStore.tags.filter((t) => kindCount(t, type) > 0)
+      .sort((a, b) => kindCount(b, type) - kindCount(a, type)).slice(0, 20)
       .map((t) => h('button', {
         class: 'pill' + (included.has(t.name.toLowerCase()) ? ' active' : ''),
-        onclick: () => search.addChip(t.name), title: `${t.count} items`,
+        onclick: () => search.addChip(t.name), title: plural(kindCount(t, type), type),
       }, h('span', { class: 'dot', style: { '--tag': tagColor(t) } }), t.name)));
   };
   renderPills();
@@ -207,9 +235,9 @@ async function renderListing(r) {
   const empty = h('div', { class: 'empty', hidden: true });
 
   view.replaceChildren(h('div', { class: 'listing' },
-    h('div', { class: 'chipbar' }, typeChips, tagPills),
+    h('div', { class: 'chipbar' }, tagPills),
     h('div', { class: 'listing-head' },
-      h('h1', {}, cfg.title), count, h('div', { class: 'spacer' }), sizeSlider, selectBtn, sortSel),
+      h('h1', {}, cfg.title), count, otherLink, h('div', { class: 'spacer' }), sizeSlider, selectBtn, sortSel),
     container, empty, sentinel));
 
   async function loadMore() {
@@ -223,7 +251,7 @@ async function renderListing(r) {
       if (S.listing !== L) return [];
       L.total = res.total;
       L.items.push(...res.items);
-      count.textContent = `${res.total.toLocaleString()} ${res.total === 1 ? 'item' : 'items'}`;
+      count.textContent = plural(res.total, type);
       appendCards(res.items);
       sentinel.hidden = L.items.length >= L.total;
       if (!L.total) showEmpty();
@@ -247,7 +275,7 @@ async function renderListing(r) {
     L.items = res.items; L.total = res.total;
     container.replaceChildren();
     appendCards(res.items);
-    count.textContent = `${res.total.toLocaleString()} items`;
+    count.textContent = plural(res.total, type);
   }
 
   function showEmpty() {
@@ -309,25 +337,27 @@ async function renderListing(r) {
       toggleSelect(item, e);
       return;
     }
-    if (item.kind === 'video') {
-      S.queue = { items: L.items.filter((i) => i.kind === 'video'), label: cfg.title + (q ? ` · “${q}”` : '') };
+    if (type === 'video') {
+      S.queue = { items: [...L.items], label: cfg.title + (q ? ` · “${q}”` : '') };
       location.hash = `#/watch/${item.id}`;
     } else {
-      const images = L.items.filter((i) => i.kind === 'image');
-      const imageSource = {
-        get items() { return images; },
-        index: images.indexOf(item),
-        get total() { return type === 'image' ? L.total : images.length + (L.items.length < (L.total || 0) ? 1 : 0); },
-        async loadMore() {
-          const more = await loadMore();
-          images.push(...more.filter((i) => i.kind === 'image'));
-        },
-      };
-      openLightbox(imageSource, lightboxHooks());
+      openLightbox({
+        get items() { return L.items; },
+        index: L.items.indexOf(item),
+        get total() { return L.total; },
+        loadMore,
+      }, lightboxHooks());
     }
   };
 
   await loadMore();
+  if (q && !cfg.filter) {
+    api(`/api/media?${new URLSearchParams({ q, type: other, limit: 1 })}`).then((res) => {
+      if (S.listing !== L || !res.total) return;
+      otherLink.replaceChildren(icon(other), `${plural(res.total, other)} also match`);
+      otherLink.hidden = false;
+    }).catch(() => {});
+  }
 }
 
 function lightboxHooks() {
@@ -343,15 +373,14 @@ function card(item) {
   const thumbImg = thumbFor(item);
   const selected = S.selected.has(item.id);
   const el = h('a', {
-    class: 'card' + (selected ? ' selected' : '') + (item.kind === 'image' ? ' is-image' : ''),
-    href: item.kind === 'video' ? `#/watch/${item.id}` : '#',
+    class: 'card' + (selected ? ' selected' : ''),
+    href: `#/watch/${item.id}`,
     'data-id': item.id,
     onclick: (e) => { e.preventDefault(); S.listing?.openItem(item, e); },
   },
     h('div', { class: 'thumb' },
       thumbImg,
-      item.kind === 'video' && item.duration ? h('span', { class: 'badge' }, fmtDuration(item.duration)) : null,
-      item.kind === 'image' ? h('span', { class: 'badge badge-icon' }, icon('image')) : null,
+      item.duration ? h('span', { class: 'badge' }, fmtDuration(item.duration)) : null,
       watched ? h('div', { class: 'watched' }, h('div', { style: { width: `${watched}%` } })) : null,
       h('button', { class: 'select-box', title: 'Select', 'aria-label': 'Select', onclick: (e) => { e.preventDefault(); e.stopPropagation(); toggleSelect(item, e); } }, icon('check')),
     ),
@@ -359,7 +388,7 @@ function card(item) {
       h('div', { class: 'card-title', title: item.filename }, item.title),
       h('div', { class: 'card-meta' },
         item.folder ? h('span', { class: 'card-folder' }, item.folder) : null,
-        h('span', {}, [item.kind === 'image' && item.width ? `${item.width}×${item.height}` : null, item.view_count ? `${item.view_count} view${item.view_count > 1 ? 's' : ''}` : null, fmtAgo(item.mtime)].filter(Boolean).join(' · '))),
+        h('span', {}, [item.view_count ? `${item.view_count} view${item.view_count > 1 ? 's' : ''}` : null, fmtAgo(item.mtime)].filter(Boolean).join(' · '))),
       h('div', { class: 'card-tags' }, cardTags(item)),
     ));
   if (item.kind === 'video' && item.browser_playable) attachHoverPreview(el, item);
@@ -540,6 +569,7 @@ async function renderWatch(id) {
   try { item = await api(`/api/media/${id}`); }
   catch (e) { view.replaceChildren(h('div', { class: 'empty' }, h('h2', {}, 'Not found'), h('p', { class: 'muted' }, e.message))); return; }
   if (S.route?.name !== 'watch' || +S.route.arg !== id) return;
+  setKind(item.kind);
 
   if (item.kind === 'image') {
     // Images open in the lightbox; show it over the related grid.
@@ -552,15 +582,15 @@ async function renderWatch(id) {
   const theater = store.get('player.theater', false);
   const page = h('div', { class: 'watch' + (theater ? ' theater' : '') });
 
-  // Up next: rest of the listing the video was opened from, then related videos.
+  // Up next: rest of the listing the video was opened from, then related videos (never images).
   const queue = S.queue?.items || [];
   const qi = queue.findIndex((i) => i.id === id);
   const upNext = [];
   const seen = new Set([id]);
   if (qi >= 0) for (const i of queue.slice(qi + 1, qi + 26)) { upNext.push(i); seen.add(i.id); }
-  for (const r of item.related) if (!seen.has(r.id)) { upNext.push(r); seen.add(r.id); }
+  for (const r of item.related) if (r.kind === 'video' && !seen.has(r.id)) { upNext.push(r); seen.add(r.id); }
   const prevItem = qi > 0 ? queue[qi - 1] : null;
-  const nextItem = upNext.find((i) => i.kind === 'video');
+  const nextItem = upNext[0];
 
   const openExt = () => openExternal(item);
   const player = createPlayer(item, {
@@ -573,7 +603,7 @@ async function renderWatch(id) {
   S.player = player;
   S.cleanup.push(() => player.destroy());
 
-  const editor = tagEditor(item, { onChange: updateCardTags, onTagClick: (t) => { navigate('', { q: `tag:${t.name.includes(' ') ? `"${t.name}"` : t.name}` }); } });
+  const editor = tagEditor(item, { onChange: updateCardTags, onTagClick: (t) => { navigate('videos', { q: tagQuery(t) }); } });
   const infoRow = (k, v) => v ? h('span', {}, h('b', {}, k), ' ', v) : null;
 
   const main = h('div', { class: 'watch-main' },
@@ -630,16 +660,10 @@ async function renderWatch(id) {
 }
 
 function compactCard(it) {
-  const watched = it.kind === 'video' && it.duration && it.position > 5 ? Math.min(100, (it.position / it.duration) * 100) : 0;
-  return h('a', {
-    class: 'compact', href: `#/watch/${it.id}`, 'data-id': it.id,
-    onclick: (e) => {
-      if (it.kind === 'image') { e.preventDefault(); openLightbox({ items: [it], index: 0 }, lightboxHooks()); }
-    },
-  },
+  const watched = it.duration && it.position > 5 ? Math.min(100, (it.position / it.duration) * 100) : 0;
+  return h('a', { class: 'compact', href: `#/watch/${it.id}`, 'data-id': it.id },
     h('div', { class: 'thumb' }, thumbFor(it),
       it.duration ? h('span', { class: 'badge' }, fmtDuration(it.duration)) : null,
-      it.kind === 'image' ? h('span', { class: 'badge badge-icon' }, icon('image')) : null,
       watched ? h('div', { class: 'watched' }, h('div', { style: { width: `${watched}%` } })) : null),
     h('div', { class: 'compact-body' },
       h('div', { class: 'card-title' }, it.title),
@@ -690,10 +714,9 @@ async function renderTagsPage() {
       return h('tr', {},
         h('td', {}, color),
         h('td', {}, name),
-        h('td', { class: 'num' }, t.videos),
-        h('td', { class: 'num' }, t.images),
+        h('td', { class: 'num' }, countLink(t, 'video')),
+        h('td', { class: 'num' }, countLink(t, 'image')),
         h('td', { class: 'actions' },
-          h('a', { class: 'btn ghost', href: hashFor('', { q: `tag:${t.name.includes(' ') ? `"${t.name}"` : t.name}` }) }, 'View'),
           t.color ? h('button', { class: 'btn ghost', title: 'Use automatic colour', onclick: async () => { await api(`/api/tags/${t.id}`, { method: 'PATCH', body: { color: null } }); tagStore.refresh(); } }, 'Reset colour') : null,
           h('button', { class: 'btn ghost danger', onclick: async () => {
             if (!confirm(`Delete tag “${t.name}”? It will be removed from ${t.count} item(s).`)) return;
@@ -716,6 +739,11 @@ async function renderTagsPage() {
       body)));
   render();
   S.cleanup.push(tagStore.subscribe(render));
+}
+
+function countLink(t, kind) {
+  const n = kindCount(t, kind);
+  return n ? h('a', { href: hashFor(KIND_VIEW[kind], { q: tagQuery(t) }), title: `Show ${plural(n, kind)} tagged “${t.name}”` }, n) : '0';
 }
 
 function toHex(color) {
@@ -791,7 +819,7 @@ function renderWelcome() {
     icon('video', 'empty-icon'),
     h('h1', {}, 'Welcome to your media library'),
     h('p', { class: 'muted' }, 'Add a folder that contains your videos and images. It is scanned recursively; nothing is moved or modified.'),
-    rootsEditor([], () => navigate('', {}, { replace: true }))));
+    rootsEditor([], () => navigate('videos', {}, { replace: true }))));
 }
 
 // ---------------------------------------------------------------------------

@@ -191,7 +191,6 @@ body.watching main { margin-left: 0; }
 }
 .card:hover .thumb { border-radius: 0; }
 .thumb img, .thumb .hover-preview { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.card.is-image .thumb img { object-fit: cover; }
 .hover-preview { opacity: 0; transition: opacity .2s; background: #000; }
 .hover-preview.show { opacity: 1; }
 .thumb-placeholder { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); }
@@ -200,8 +199,6 @@ body.watching main { margin-left: 0; }
   position: absolute; right: 8px; bottom: 8px; padding: 1px 5px; border-radius: 4px; z-index: 2;
   background: rgba(0, 0, 0, .8); color: #fff; font-size: 12px; font-weight: 500;
 }
-.badge-icon { padding: 3px; display: grid; }
-.badge-icon svg { width: 14px; height: 14px; }
 .watched { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(255,255,255,.35); z-index: 2; }
 .watched > div { height: 100%; background: var(--accent); }
 .card-body { display: flex; flex-direction: column; gap: 4px; padding: 0 4px; min-width: 0; }
@@ -432,6 +429,8 @@ body.watching main { margin-left: 0; }
 .table th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; padding: 8px; border-bottom: 1px solid var(--border); }
 .table td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
 .table .num { text-align: right; width: 80px; font-variant-numeric: tabular-nums; }
+.table .num a { color: var(--accent-2); }
+.table .num a:hover { text-decoration: underline; }
 .table .actions { text-align: right; white-space: nowrap; }
 .color-input { width: 32px; height: 32px; border: 0; padding: 0; background: transparent; cursor: pointer; }
 .roots { display: flex; flex-direction: column; gap: 8px; }

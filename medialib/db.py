@@ -210,7 +210,10 @@ class Database:
         )
 
     def related(self, media_id, limit=20):
-        """Items sharing the most tags, topped up with items from the same folder."""
+        """Items of the same kind sharing the most tags, topped up with items from the same folder.
+
+        Videos only get videos and images only get images, so the two never mix.
+        """
         item = self.get_media(media_id)
         if not item:
             return []
@@ -218,8 +221,8 @@ class Database:
             f"SELECT {_prefixed('m')}, COUNT(*) AS shared FROM media_tags mt "
             f"JOIN media m ON m.id = mt.media_id "
             f"WHERE mt.tag_id IN (SELECT tag_id FROM media_tags WHERE media_id = ?) "
-            f"AND m.id != ? AND m.missing = 0 "
-            f"GROUP BY m.id ORDER BY shared DESC, (m.kind = ?) DESC, RANDOM() LIMIT ?",
+            f"AND m.id != ? AND m.missing = 0 AND m.kind = ? "
+            f"GROUP BY m.id ORDER BY shared DESC, RANDOM() LIMIT ?",
             (media_id, media_id, item["kind"], limit),
         )
         results = [dict(r) for r in rows]
