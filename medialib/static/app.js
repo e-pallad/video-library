@@ -129,8 +129,8 @@ async function pollScan() {
   const el = $('#scan-status');
   if (st.running) {
     el.hidden = false;
-    el.textContent = st.phase === 'thumbnails'
-      ? `Thumbnails ${st.thumbs_done}/${st.thumbs_total}`
+    el.textContent = st.phase === 'thumbnails' ? `Thumbnails ${st.thumbs_done}/${st.thumbs_total}`
+      : st.phase === 'probing' ? `Reading video formats ${st.thumbs_done}/${st.thumbs_total}`
       : `Scanning… ${st.found} files`;
     wasRunning = true;
     scanPoll = setTimeout(pollScan, 1200);
@@ -594,7 +594,11 @@ async function renderWatch(id) {
         infoRow('Duration', fmtDuration(item.duration)),
         infoRow('Resolution', item.width ? `${item.width}×${item.height}` : ''),
         infoRow('Size', fmtSize(item.size)),
-        infoRow('Format', item.ext.replace('.', '').toUpperCase()),
+        infoRow('Format', [item.ext.replace('.', '').toUpperCase(), item.codecs?.video?.toUpperCase(), item.codecs?.audio?.toUpperCase()].filter(Boolean).join(' · ')
+          + (item.codecs?.ten_bit ? ' (10-bit)' : '')),
+        infoRow('Playback', { direct: 'Native', remux: 'Repackaged on the fly (no quality loss)', transcode: 'Converted to H.264 on the fly' }[item.playback] || ''),
+        item.audio_tracks?.length > 1 ? infoRow('Audio tracks', String(item.audio_tracks.length)) : null,
+        item.subtitles?.length ? infoRow('Subtitles', item.subtitles.map((s) => s.label).join(', ')) : null,
         infoRow('Folder', item.folder || '/')),
       h('div', { class: 'watch-path muted small', title: item.path }, item.path)),
   );
@@ -775,7 +779,7 @@ async function renderSettings() {
     h('h2', {}, 'Keyboard shortcuts'),
     h('div', { class: 'shortcuts' },
       ...[['/', 'Focus search'], ['Space / K', 'Play / pause'], ['← / →', 'Seek 5s (video) · prev/next (image)'], ['J / L', 'Seek 10s'], ['↑ / ↓', 'Volume'],
-        ['M', 'Mute'], ['F', 'Fullscreen'], ['T', 'Theater mode (video) · tag image (lightbox)'], ['I', 'Picture-in-picture · info panel (lightbox)'], ['< / >', 'Playback speed'],
+        ['M', 'Mute'], ['C', 'Subtitles on/off'], ['F', 'Fullscreen'], ['T', 'Theater mode (video) · tag image (lightbox)'], ['I', 'Picture-in-picture · info panel (lightbox)'], ['< / >', 'Playback speed'],
         ['0–9', 'Jump to 0–90%'], ['G', 'Add a tag (watch page)'], ['Shift+N / Shift+P', 'Next / previous video'], ['S', 'Slideshow (lightbox)'], ['+ / − / 0', 'Zoom (lightbox)'], ['Esc', 'Close lightbox']]
         .map(([k, d]) => h('div', { class: 'shortcut' }, h('kbd', {}, k), h('span', {}, d))))));
 }

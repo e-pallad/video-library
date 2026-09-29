@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .config import kind_for, norm_path
+from .playback import probe
 from .thumbs import make_thumb
 
 FINGERPRINT_CHUNK = 64 * 1024
@@ -154,7 +155,8 @@ class Scanner:
             for f in changed:
                 c.execute(
                     "UPDATE media SET size = ?, mtime = ?, fingerprint = ?, missing = 0, "
-                    "thumb_state = 'pending', duration = NULL, width = NULL, height = NULL WHERE id = ?",
+                    "thumb_state = 'pending', duration = NULL, width = NULL, height = NULL, media_info = NULL "
+                    "WHERE id = ?",
                     (f["size"], f["mtime"], f["fp"], f["id"]),
                 )
             for f in new_files:
@@ -203,6 +205,21 @@ class Scanner:
         if rows:
             with ThreadPoolExecutor(max_workers=self.workers) as pool:
                 list(pool.map(work, rows))
+
+        # Videos indexed by an older version have no codec info yet (needed to pick a playback mode).
+        stale = [dict(r) for r in self.db.query(
+            "SELECT id, path FROM media WHERE kind = 'video' AND missing = 0 AND media_info IS NULL")]
+        if stale:
+            st.update(phase="probing", thumbs_total=len(stale), thumbs_done=0)
+
+            def backfill(item):
+                info = probe(item["path"])
+                if info:
+                    self.db.set_media_info(item["id"], info)
+                st["thumbs_done"] += 1
+
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                list(pool.map(backfill, stale))
 
 
 def _safe_fp(f):

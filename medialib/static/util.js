@@ -61,6 +61,8 @@ export const ICONS = {
   check: '<path d="m5 12 5 5 9-10"/>',
   slideshow: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M10 8v5l4-2.5z" class="fill"/><path d="M8 21h8"/>',
   tag: '<path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+  cc: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M10.5 10.2a2.5 2.5 0 1 0 0 3.6M17.5 10.2a2.5 2.5 0 1 0 0 3.6"/>',
+  audio: '<path d="M3 14v-2a9 9 0 0 1 18 0v2"/><rect x="2" y="14" width="5" height="7" rx="1.5"/><rect x="17" y="14" width="5" height="7" rx="1.5"/>',
 };
 
 export function icon(name, cls = '') { return svg(ICONS[name] || '', cls); }

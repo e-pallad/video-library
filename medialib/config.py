@@ -7,9 +7,6 @@ from pathlib import Path
 VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".avi", ".wmv", ".flv", ".ogv", ".mpg", ".mpeg", ".3gp"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif", ".tif", ".tiff"}
 
-# Formats most browsers can play natively in a <video> element.
-BROWSER_VIDEO_EXTS = {".mp4", ".webm", ".m4v", ".ogv", ".mov"}
-
 THUMB_WIDTH = 480
 
 

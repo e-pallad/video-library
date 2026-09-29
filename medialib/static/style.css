@@ -298,6 +298,7 @@ body.watching main { margin-left: 0; }
 }
 .player.fullscreen { border-radius: 0; max-height: none; aspect-ratio: auto; }
 .player-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.player-video.catching-up { opacity: 0; }
 .player-bigplay {
   position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: 72px; height: 72px; border-radius: 50%;
   border: 0; background: rgba(0,0,0,.6); color: #fff; display: none; place-items: center;
@@ -344,10 +345,28 @@ body.watching main { margin-left: 0; }
 }
 .player-vol:hover .player-volume, .player-volume:focus { width: 72px; opacity: 1; margin-right: 8px; }
 .player-time { font-size: 13px; padding: 0 8px; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.player-speed { position: relative; }
+.player-menu-wrap { position: relative; }
 .player-menu {
-  position: absolute; bottom: 48px; right: 0; background: rgba(28,28,28,.95); border-radius: 12px; padding: 8px 0; min-width: 120px;
+  position: absolute; bottom: 48px; right: 0; background: rgba(28,28,28,.95); border-radius: 12px; padding: 8px 0; min-width: 140px;
+  max-height: 60vh; overflow-y: auto; z-index: 5;
 }
+.menu-title { padding: 4px 16px 8px; font-size: 12px; color: #aaa; border-bottom: 1px solid rgba(255,255,255,.12); margin-bottom: 4px; white-space: nowrap; }
+.menu-item { white-space: nowrap; }
+.player-subtitles {
+  position: absolute; left: 5%; right: 5%; bottom: 64px; display: flex; flex-direction: column; align-items: center; gap: 4px;
+  pointer-events: none; transition: bottom .25s; z-index: 1;
+}
+.player.idle .player-subtitles { bottom: 24px; }
+.player-subtitles .cue {
+  background: rgba(8,8,8,.75); color: #fff; padding: 2px 10px; border-radius: 4px; text-align: center;
+  font-size: clamp(14px, 2.4vw, 30px); line-height: 1.35; max-width: 100%;
+}
+.player.fullscreen .player-subtitles .cue { font-size: clamp(18px, 3vw, 44px); }
+.player-badge {
+  position: absolute; top: 12px; left: 12px; padding: 3px 10px; border-radius: 12px; background: rgba(0,0,0,.6);
+  color: #ddd; font-size: 12px; transition: opacity .25s; cursor: help;
+}
+.player.idle .player-badge { opacity: 0; }
 .menu-item { display: block; width: 100%; border: 0; background: transparent; color: #fff; padding: 8px 16px; text-align: left; }
 .menu-item:hover { background: rgba(255,255,255,.1); }
 .menu-item.on { font-weight: 700; }

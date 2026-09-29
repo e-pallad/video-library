@@ -9,9 +9,10 @@ Everything runs on your computer. Nothing is uploaded, and your files are never 
 ## Features
 
 - **Library grid.** Videos and images are shown together with thumbnails, durations and a watched-progress bar. Hovering over a video plays a preview. The grid loads more as you scroll, and you can sort by date, name, length, size, views or shuffle.
-- **Video player.** A YouTube-style watch page with:
+- **Video player.** It plays MKV, AVI, HEVC and other formats by converting them on the fly (see *Supported formats*). A YouTube-style watch page with:
   - custom controls: seek bar with time preview, volume, speed 0.25–2×, loop, theater mode, fullscreen, picture-in-picture,
   - an autoplay-next toggle and an "Up next" list,
+  - audio-track selection and subtitles (embedded or `.srt`/`.ass` files next to the video),
   - **resume** from where you stopped.
 - **Image gallery.** A justified grid like Google Photos, with a size slider. It opens a fullscreen **lightbox** with:
   - prev/next (keys, buttons or swipe),
@@ -92,6 +93,7 @@ the grid, or a tag in the sidebar.
 | `0`–`9` | Jump to 0–90 % | `0` resets zoom |
 | `+` / `-` | | Zoom |
 | `M` | Mute | |
+| `C` | Subtitles on/off | |
 | `F` | Fullscreen | Fullscreen |
 | `T` | Theater mode | Add a tag |
 | `I` | Picture-in-picture | Info panel |
@@ -103,12 +105,28 @@ the grid, or a tag in the sidebar.
 
 ## Supported formats
 
-- **Videos:** mp4, m4v, webm, mov, mkv, avi, wmv, flv, ogv, mpg, 3gp
+- **Videos:** mp4, m4v, webm, mov, **mkv**, avi, wmv, flv, ogv, mpg/mpeg, 3gp
 - **Images:** jpg, png, gif, webp, bmp, avif, tiff
 
-Browsers play **MP4 (H.264)** and **WebM** natively. For other formats, such as most `.mkv`, `.avi` and `.wmv`
-files, the player shows an **Open in default player** button, which opens the file in e.g. VLC. Those files
-still get thumbnails, and you can tag and search them like everything else.
+**Every video plays in the built-in player, including MKV, AVI, WMV, HEVC/H.265, 10-bit H.264, and AC-3/DTS audio.**
+When the library scans a video, it records the video's codecs, and each one is played in one of three ways:
+
+| Playback | When | What happens |
+|---|---|---|
+| **Native** | MP4/WebM/MOV with H.264, VP9 or AV1 video and AAC/MP3/Opus audio | The file is streamed as-is |
+| **Repackaged** | e.g. MKV with H.264/VP9/AV1 video, or any file with AC-3/DTS/FLAC audio | The video is copied into MP4 on the fly (no quality loss, almost no CPU); only the audio is converted when needed |
+| **Converted** | HEVC/H.265, 10-bit H.264, MPEG-2/4, WMV, DivX/Xvid, … | The video is re-encoded to H.264 on the fly (uses CPU; capped at 1080p) |
+
+Seeking, resume and playback speed work for all three. If a file still won't play (for example a damaged file),
+an **Open in default player** button opens it in e.g. VLC.
+
+MKV extras:
+- **Multiple audio tracks:** use the 🎧 button in the player. Your chosen language is remembered.
+- **Subtitles:** use the CC button, or press `C`. The player shows:
+  - text subtitles embedded in the file (SRT, ASS/SSA, WebVTT, MP4 text),
+  - subtitle files next to the video with the same name: `Movie.srt`, `Movie.en.srt`, `Movie.German.ass`, `.vtt`.
+
+  Old non-UTF-8 `.srt` files are converted automatically. Image-based subtitles (Blu-ray PGS, DVD) can't be shown.
 
 ## Where your data lives
 
@@ -133,4 +151,5 @@ Layout:
 - `medialib/search.py`: query parser → SQL
 - `medialib/scanner.py`: folder scanning and move detection
 - `medialib/thumbs.py`: thumbnails and metadata
+- `medialib/playback.py`: codec probing, direct/remux/transcode decisions, streaming, subtitles
 - `medialib/static/`: the frontend (plain ES modules, no build step)

@@ -97,3 +97,29 @@ def test_browser_thumbnail_upload(tmp_path, library):
         r = c.post(f"/api/media/{mid}/thumb", content=buf.getvalue(), headers={"X-Duration": "12.5"})
         assert r.status_code == 200 and r.json()["thumb"]
         assert c.post(f"/api/media/{mid}/thumb", content=b"garbage").status_code == 400
+
+
+def test_mkv_stream_and_subtitles(tmp_path):
+    import subprocess
+    from medialib.ffmpeg import ffmpeg_exe
+
+    root = tmp_path / "media"
+    root.mkdir()
+    (root / "clip.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\nSidecar\n")
+    subprocess.run([ffmpeg_exe(), "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=6",
+                    "-f", "lavfi", "-i", "sine=f=440:duration=6", "-c:v", "libx265", "-x265-params", "log-level=error",
+                    "-c:a", "ac3", str(root / "clip.mkv")], check=True)
+    with client(tmp_path / "data") as c:
+        c.put("/api/settings", json={"roots": [str(root)]})
+        scan(c)
+        item = c.get("/api/media").json()["items"][0]
+        assert item["playback"] == "transcode" and not item["browser_playable"]
+        detail = c.get(f"/api/media/{item['id']}").json()
+        assert detail["codecs"]["video"] == "hevc" and detail["stream_mode"] == "transcode"
+        assert [s["label"] for s in detail["subtitles"]] == ["External (SRT)"]
+        assert "Sidecar" in c.get(detail["subtitles"][0]["url"]).text
+        assert c.get(f"/api/media/{item['id']}/stream-start", params={"t": 2.5}).json()["start"] == 2.5
+        r = c.get(detail["stream_url"], params={"t": 2})
+        assert r.status_code == 200 and r.headers["content-type"] == "video/mp4"
+        assert r.headers["x-playback-mode"] == "transcode"
+        assert r.content[4:8] == b"ftyp" and len(r.content) > 1000

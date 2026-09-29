@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS media (
     missing        INTEGER NOT NULL DEFAULT 0,
     thumb_state    TEXT NOT NULL DEFAULT 'pending',
     thumb_ver      INTEGER NOT NULL DEFAULT 0,
+    media_info     TEXT,
     added_at       REAL NOT NULL,
     last_viewed_at REAL,
     view_count     INTEGER NOT NULL DEFAULT 0
@@ -63,7 +64,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 MEDIA_COLUMNS = (
     "id, path, root, rel_path, filename, ext, kind, size, mtime, duration, width, height, "
-    "position, missing, thumb_state, thumb_ver, added_at, last_viewed_at, view_count"
+    "position, missing, thumb_state, thumb_ver, media_info, added_at, last_viewed_at, view_count"
 )
 
 _ws = re.compile(r"\s+")
@@ -95,6 +96,14 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self):
+        """Add columns introduced after a library database was first created."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(media)")}
+        for name, ddl in (("media_info", "TEXT"),):
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE media ADD COLUMN {name} {ddl}")
 
     def close(self):
         with self.lock:
@@ -182,12 +191,22 @@ class Database:
 
     def set_thumb_result(self, media_id, ok, meta=None):
         meta = meta or {}
+        info = meta.get("info")
         self.execute(
             "UPDATE media SET thumb_state = ?, thumb_ver = thumb_ver + ?, "
-            "duration = COALESCE(?, duration), width = COALESCE(?, width), height = COALESCE(?, height) "
-            "WHERE id = ?",
+            "duration = COALESCE(?, duration), width = COALESCE(?, width), height = COALESCE(?, height), "
+            "media_info = COALESCE(?, media_info) WHERE id = ?",
             ("ok" if ok else "failed", 1 if ok else 0,
-             meta.get("duration"), meta.get("width"), meta.get("height"), media_id),
+             meta.get("duration"), meta.get("width"), meta.get("height"),
+             json.dumps(info, separators=(",", ":")) if info else None, media_id),
+        )
+
+    def set_media_info(self, media_id, info):
+        self.execute(
+            "UPDATE media SET media_info = ?, duration = COALESCE(duration, ?), "
+            "width = COALESCE(width, ?), height = COALESCE(height, ?) WHERE id = ?",
+            (json.dumps(info, separators=(",", ":")), info.get("duration"), info.get("width"),
+             info.get("height"), media_id),
         )
 
     def related(self, media_id, limit=20):

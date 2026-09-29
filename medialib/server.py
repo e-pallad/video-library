@@ -7,12 +7,14 @@ import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import anyio
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, search, thumbs
-from .config import BROWSER_VIDEO_EXTS, default_data_dir
+from . import __version__, playback, search, thumbs
+from .config import default_data_dir
+from .ffmpeg import ffmpeg_exe
 from .db import Database, TagError
 from .scanner import Scanner
 
@@ -32,7 +34,9 @@ def create_app(data_dir=None, allow_remote=False, scan_on_start=True):
     data_dir = Path(data_dir or default_data_dir())
     db = Database(data_dir / "library.db")
     thumbs_dir = data_dir / "thumbs"
+    subs_dir = data_dir / "subtitles"
     scanner = Scanner(db, thumbs_dir)
+    streams = playback.StreamRegistry()
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -40,6 +44,7 @@ def create_app(data_dir=None, allow_remote=False, scan_on_start=True):
         if scan_on_start and roots:
             scanner.start(roots)
         yield
+        streams.stop_all()
         db.close()
 
     app = FastAPI(title="Media Library", version=__version__, lifespan=lifespan)
@@ -69,7 +74,11 @@ def create_app(data_dir=None, allow_remote=False, scan_on_start=True):
             d["missing"] = bool(i["missing"])
             d["url"] = f"/api/media/{i['id']}/file"
             d["thumb"] = f"/api/media/{i['id']}/thumb?v={i['thumb_ver']}" if i["thumb_state"] == "ok" else None
-            d["browser_playable"] = i["kind"] == "image" or i["ext"] in BROWSER_VIDEO_EXTS
+            if i["kind"] == "video":
+                d["playback"] = playback.playback_mode(i["ext"], playback.loads(i.get("media_info")))
+                d["browser_playable"] = d["playback"] == "direct"
+            else:
+                d["browser_playable"] = True
             if with_tags:
                 d["tags"] = tags.get(i["id"], [])
             out.append(d)
@@ -110,13 +119,85 @@ def create_app(data_dir=None, allow_remote=False, scan_on_start=True):
                       "kind": parsed.kind},
         }
 
+    def media_info(item):
+        """Probe info for a video, probing lazily for rows indexed before it was stored."""
+        info = playback.loads(item.get("media_info"))
+        if info is None and item["kind"] == "video" and os.path.isfile(item["path"]):
+            info = playback.probe(item["path"])
+            if info:
+                db.set_media_info(item["id"], info)
+                item["media_info"] = playback.dumps(info)
+        return info
+
     @app.get("/api/media/{media_id}")
     def media_detail(media_id: int):
-        item = serialize([require_item(media_id)])[0]
-        path, _ = db.get_media_path(media_id)
-        item["path"] = path
+        raw = require_item(media_id)
+        info = media_info(raw)
+        item = serialize([raw])[0]
+        item["path"] = raw["path"]
+        if raw["kind"] == "video":
+            item["stream_url"] = f"/api/media/{media_id}/stream"
+            item["audio_tracks"] = playback.audio_tracks(info)
+            item["subtitles"] = playback.subtitle_tracks(media_id, raw["path"], info)
+            item["codecs"] = {
+                "video": (info or {}).get("video_codec"),
+                "audio": playback.first_audio_codec(info),
+                "ten_bit": bool((info or {}).get("ten_bit")),
+            }
+            item["stream_mode"] = playback.stream_mode(info)
         item["related"] = serialize(db.related(media_id, limit=24))
         return item
+
+    @app.get("/api/media/{media_id}/stream")
+    async def media_stream(media_id: int, t: float = 0.0, audio: int = 0, transcode: bool = False):
+        """Video converted on the fly to fragmented MP4 (for MKV, AVI, HEVC, AC-3 audio, ...)."""
+        raw = require_item(media_id)
+        path = require_file(media_id)
+        if not ffmpeg_exe():
+            raise HTTPException(503, "ffmpeg is not available")
+        info = await anyio.to_thread.run_sync(media_info, raw)
+        cmd, mode = playback.stream_command(path, info, start=max(0.0, t), audio_index=audio,
+                                            force_transcode=transcode)
+        proc = streams.start(media_id, cmd)
+
+        async def body():
+            try:
+                while True:
+                    chunk = await anyio.to_thread.run_sync(proc.stdout.read, 256 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                # Runs when the player seeks or closes (client disconnect): stop ffmpeg.
+                with anyio.CancelScope(shield=True):
+                    await anyio.to_thread.run_sync(streams.finish, media_id, proc)
+
+        return StreamingResponse(body(), media_type="video/mp4",
+                                 headers={"Cache-Control": "no-store", "X-Playback-Mode": mode})
+
+    @app.get("/api/media/{media_id}/stream-start")
+    def media_stream_start(media_id: int, t: float = 0.0, transcode: bool = False):
+        """Where a stream requested at ``t`` really starts (stream copy can only start on keyframes)."""
+        raw = require_item(media_id)
+        path = require_file(media_id)
+        info = media_info(raw)
+        if playback.stream_mode(info, transcode) == "transcode" or t <= 0:
+            return {"start": max(0.0, t)}
+        return {"start": playback.keyframe_before(path, t, info)}
+
+    @app.get("/api/media/{media_id}/subtitles/{key}.vtt")
+    def media_subtitles(media_id: int, key: str):
+        raw = require_item(media_id)
+        path = require_file(media_id)
+        if not (len(key) > 1 and key[0] in "es" and key[1:].isdigit()):
+            raise HTTPException(404, "Unknown subtitle track")
+        out = subs_dir / f"{media_id}-{key}-{int(raw['mtime'])}.vtt"
+        if not out.exists():
+            for old in subs_dir.glob(f"{media_id}-{key}-*.vtt"):
+                old.unlink(missing_ok=True)  # stale cache from an older version of the file
+            if not playback.extract_subtitle(path, key, media_info(raw), out):
+                raise HTTPException(404, "Could not read subtitle track")
+        return FileResponse(out, media_type="text/vtt; charset=utf-8", headers={"Cache-Control": "no-cache"})
 
     @app.get("/api/media/{media_id}/file")
     def media_file(media_id: int):
@@ -241,7 +322,7 @@ def create_app(data_dir=None, allow_remote=False, scan_on_start=True):
     @app.get("/api/settings")
     def get_settings():
         return {"roots": db.get_setting("roots", []), "data_dir": str(data_dir),
-                "ffmpeg": bool(thumbs.ffmpeg_exe()), "version": __version__}
+                "ffmpeg": bool(ffmpeg_exe()), "version": __version__}
 
     @app.put("/api/settings")
     def put_settings(body: dict = Body(...)):
