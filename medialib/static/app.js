@@ -16,13 +16,14 @@ const S = {
   selected: new Set(),
   settings: null,
   player: null,
+  deleting: false,      // a delete request is running (no hover previews meanwhile)
 };
 
 // ---------------------------------------------------------------------------
 // Routing
 
 const LISTINGS = {
-  '': { title: 'Home', type: null, layout: 'grid' },
+  '': { title: 'Home', type: null, layout: 'grid', defaultSort: 'random' },
   videos: { title: 'Videos', type: 'video', layout: 'grid' },
   gallery: { title: 'Gallery', type: 'image', layout: 'justified' },
   continue: { title: 'Continue watching', type: 'video', layout: 'grid', filter: 'in_progress', sort: 'recent' },
@@ -162,15 +163,20 @@ $('#rescan-btn').addEventListener('click', async () => {
 async function renderListing(r) {
   const cfg = LISTINGS[r.name];
   const q = r.params.get('q') || '';
-  const sort = r.params.get('sort') || cfg.sort || store.get(`sort.${r.name || 'home'}`, 'newest');
+  const sort = r.params.get('sort') || cfg.sort || store.get(`sort.${r.name || 'home'}`, cfg.defaultSort || 'newest');
   const type = cfg.type || r.params.get('type') || null;
-  const seed = +(r.params.get('seed') || 0) || Math.floor(Math.random() * 1e6) + 1;
+  const seed = +(r.params.get('seed') || 0) || newSeed();
+  if (sort === 'random' && !r.params.get('seed')) {
+    // Remember this shuffle in the URL, so coming back from a video shows the same order.
+    r.params.set('seed', seed);
+    history.replaceState(null, '', hashFor(r.name, Object.fromEntries(r.params)));
+  }
 
-  if (!S.settings) S.settings = await api('/api/settings').catch(() => ({ roots: [] }));
+  await getSettings();
   if (!S.settings.roots.length) return renderWelcome();
 
   const L = S.listing = {
-    cfg, q, sort, type, seed, items: [], total: null, loading: false, name: r.name,
+    cfg, q, sort, type, seed, items: [], offset: 0, total: null, loading: false, name: r.name,
     reload: (keep) => { if (keep && L.items.length) refreshLoaded(); else navigate(r.name, Object.fromEntries(r.params), { replace: true }); },
   };
 
@@ -198,7 +204,9 @@ async function renderListing(r) {
   renderPills();
   S.cleanup.push(tagStore.subscribe(renderPills));
 
-  const selectBtn = h('button', { class: 'btn ghost', title: 'Select items to tag several at once', onclick: () => setSelectMode(!document.body.classList.contains('select-mode')) }, icon('check'), 'Select');
+  const shuffleBtn = sort === 'random' ? h('button', { class: 'btn ghost', title: 'Mix the list again',
+    onclick: () => navigate(r.name, { ...Object.fromEntries(r.params), seed: newSeed() }) }, icon('shuffle'), 'Reshuffle') : null;
+  const selectBtn = h('button', { class: 'btn ghost', title: 'Select items to tag or delete several at once', onclick: () => setSelectMode(!document.body.classList.contains('select-mode')) }, icon('check'), 'Select');
   const sizeSlider = cfg.layout === 'justified' ? h('input', { type: 'range', class: 'size-slider', min: 120, max: 420, step: 10, value: store.get('gallery.rowHeight', 220), title: 'Thumbnail size',
     oninput: () => { store.set('gallery.rowHeight', +sizeSlider.value); layoutJustified(); } }) : null;
 
@@ -209,25 +217,32 @@ async function renderListing(r) {
   view.replaceChildren(h('div', { class: 'listing' },
     h('div', { class: 'chipbar' }, typeChips, tagPills),
     h('div', { class: 'listing-head' },
-      h('h1', {}, cfg.title), count, h('div', { class: 'spacer' }), sizeSlider, selectBtn, sortSel),
+      h('h1', {}, cfg.title), count, h('div', { class: 'spacer' }), sizeSlider, shuffleBtn, selectBtn, sortSel),
     container, empty, sentinel));
 
+  const showCount = () => { count.textContent = `${L.total.toLocaleString()} ${L.total === 1 ? 'item' : 'items'}`; };
+
   async function loadMore() {
-    if (L.loading || (L.total != null && L.items.length >= L.total)) return [];
+    if (L.loading || (L.total != null && L.offset >= L.total)) return [];
     L.loading = true;
     try {
-      const p = new URLSearchParams({ q, sort, offset: L.items.length, limit: PAGE, seed });
+      const p = new URLSearchParams({ q, sort, offset: L.offset, limit: PAGE, seed });
       if (type) p.set('type', type);
       if (cfg.filter) p.set('filter', cfg.filter);
       const res = await api(`/api/media?${p}`);
       if (S.listing !== L) return [];
       L.total = res.total;
-      L.items.push(...res.items);
-      count.textContent = `${res.total.toLocaleString()} ${res.total === 1 ? 'item' : 'items'}`;
-      appendCards(res.items);
-      sentinel.hidden = L.items.length >= L.total;
+      L.offset += res.items.length;
+      // Deleting items can shift the order a little; never show an item twice.
+      const shown = new Set(L.items.map((i) => i.id));
+      const items = res.items.filter((i) => !shown.has(i.id));
+      L.items.push(...items);
+      showCount();
+      appendCards(items);
+      sentinel.hidden = L.offset >= L.total || !res.items.length;
       if (!L.total) showEmpty();
-      return res.items;
+      if (!items.length && !sentinel.hidden) setTimeout(loadMore);  // the whole page was already shown
+      return items;
     } catch (e) {
       toast(e.message, { error: true });
       return [];
@@ -244,11 +259,25 @@ async function renderListing(r) {
     if (cfg.filter) p.set('filter', cfg.filter);
     const res = await api(`/api/media?${p}`).catch(() => null);
     if (!res || S.listing !== L) return;
-    L.items = res.items; L.total = res.total;
+    L.items = res.items; L.total = res.total; L.offset = res.items.length;
     container.replaceChildren();
     appendCards(res.items);
-    count.textContent = `${res.total.toLocaleString()} items`;
+    showCount();
   }
+
+  // Deleted files: drop their cards. The server's list shrank by the same amount, so the paging offset does too.
+  L.removeItems = (gone) => {
+    const before = L.items.length;
+    L.items = L.items.filter((i) => !gone.has(i.id));
+    const removed = before - L.items.length;
+    if (!removed) return;
+    L.offset = Math.max(0, L.offset - removed);
+    L.total = Math.max(0, L.total - removed);
+    [...container.children].forEach((el) => { if (gone.has(+el.dataset.id)) el.remove(); });
+    layoutJustified();
+    showCount();
+    if (!L.total) showEmpty();
+  };
 
   function showEmpty() {
     empty.hidden = false;
@@ -317,7 +346,7 @@ async function renderListing(r) {
       const imageSource = {
         get items() { return images; },
         index: images.indexOf(item),
-        get total() { return type === 'image' ? L.total : images.length + (L.items.length < (L.total || 0) ? 1 : 0); },
+        get total() { return type === 'image' ? L.total : images.length + (L.offset < (L.total || 0) ? 1 : 0); },
         async loadMore() {
           const more = await loadMore();
           images.push(...more.filter((i) => i.kind === 'image'));
@@ -335,6 +364,7 @@ function lightboxHooks() {
     onTagClick: (t) => search.addChip(t.name),
     onChange: (item) => updateCardTags(item),
     openExternal: (item, reveal) => openExternal(item, reveal),
+    deleteItem: async (item) => (await deleteItems([item])).includes(item.id),
   };
 }
 
@@ -399,6 +429,7 @@ function attachHoverPreview(el, item) {
   let timer, vid;
   el.addEventListener('mouseenter', () => {
     timer = setTimeout(() => {
+      if (!el.isConnected || S.deleting) return;
       const start = item.position > 5 ? item.position : (item.duration ? item.duration * 0.1 : 0);
       vid = h('video', { class: 'hover-preview', src: `${item.url}#t=${start.toFixed(1)}`, muted: true, autoplay: true, loop: true, playsinline: true, preload: 'auto' });
       vid.muted = true;
@@ -472,12 +503,83 @@ async function bulkApply(mode) {
 }
 $('#bulk-add').addEventListener('click', () => bulkApply('add'));
 $('#bulk-remove').addEventListener('click', () => bulkApply('remove'));
+$('#bulk-delete').addEventListener('click', () => {
+  const items = (S.listing?.items || []).filter((i) => S.selected.has(i.id));
+  if (!items.length) { toast('Select some items first'); return; }
+  deleteItems(items);
+});
 $('#bulk-clear').addEventListener('click', () => setSelectMode(false));
 $('#bulk-all').addEventListener('click', () => {
   (S.listing?.items || []).forEach((i) => S.selected.add(i.id));
   $$('[data-id]').forEach((c) => c.classList.toggle('selected', S.selected.has(+c.dataset.id)));
   updateBulkbar();
 });
+
+// ---------------------------------------------------------------------------
+// Deleting files
+
+function newSeed() { return Math.floor(Math.random() * 1e9) + 1; }
+
+async function getSettings() {
+  if (!S.settings) S.settings = await api('/api/settings').catch(() => ({ roots: [] }));
+  return S.settings;
+}
+
+/**
+ * Delete files after asking: to the Recycle Bin/Trash, or permanently when that isn't possible.
+ * `beforeDelete` runs once the user has confirmed (e.g. to stop a video that keeps the file open).
+ * Returns the ids that were deleted.
+ */
+async function deleteItems(items, { beforeDelete } = {}) {
+  if (!items.length) return [];
+  const { trash } = await getSettings();
+  const bin = trash || 'Trash';
+  const what = items.length === 1 ? `“${items[0].filename}”` : `${items.length} files`;
+  const permanent = trash === null; // the server can't use the trash at all
+  if (!confirm(permanent ? `Permanently delete ${what}? This can't be undone.` : `Move ${what} to the ${bin}?`)) return [];
+  beforeDelete?.();
+  // A playing hover preview keeps its file open, and Windows can't delete open files.
+  S.deleting = true;
+  $$('.hover-preview').forEach((v) => { v.pause(); v.removeAttribute('src'); v.load(); v.remove(); });
+
+  const send = (ids, perm) => api('/api/media/bulk-delete', { method: 'POST', body: { ids, permanent: perm } });
+  const deleted = [];
+  let failed = [], forced = permanent;
+  try {
+    const res = await send(items.map((i) => i.id), permanent);
+    deleted.push(...res.deleted);
+    failed = res.failed;
+    const retry = failed.filter((f) => f.can_force);
+    if (retry.length && confirm(`${retry.length === 1 ? 'A file' : `${retry.length} files`} couldn't be moved to the ${bin} (${retry[0].error}).\n\nDelete ${retry.length === 1 ? 'it' : 'them'} permanently? This can't be undone.`)) {
+      const again = await send(retry.map((f) => f.id), true);
+      deleted.push(...again.deleted);
+      failed = [...failed.filter((f) => !f.can_force), ...again.failed];
+      forced = forced || again.deleted.length > 0;
+    }
+  } catch (e) {
+    toast(e.message, { error: true });
+  } finally {
+    S.deleting = false;
+  }
+
+  if (deleted.length) {
+    removeDeleted(deleted);
+    tagStore.refresh();
+    const name = deleted.length === 1 ? `“${items.find((i) => i.id === deleted[0])?.filename}”` : `${deleted.length} files`;
+    toast(forced ? `Deleted ${name}` : `Moved ${name} to the ${bin}`);
+  }
+  if (failed.length) toast(`${failed.length === 1 ? 'A file was' : `${failed.length} files were`} not deleted: ${failed[0].error}`, { error: true, timeout: 6000 });
+  return deleted;
+}
+
+function removeDeleted(ids) {
+  const gone = new Set(ids);
+  S.listing?.removeItems?.(gone);
+  if (S.queue) S.queue.items = S.queue.items.filter((i) => !gone.has(i.id));
+  ids.forEach((id) => S.selected.delete(id));
+  $$('[data-id]').forEach((el) => { if (gone.has(+el.dataset.id)) el.remove(); });
+  updateBulkbar();
+}
 
 // ---------------------------------------------------------------------------
 // Browser-side thumbnail fallback (used when ffmpeg couldn't make one)
@@ -586,6 +688,7 @@ async function renderWatch(id) {
         h('button', { class: 'btn', onclick: () => openExternal(item) }, icon('external'), 'Open externally'),
         h('button', { class: 'btn', onclick: () => openExternal(item, true) }, icon('folder'), 'Show in folder'),
         h('button', { class: 'btn', onclick: () => { navigator.clipboard?.writeText(item.path); toast('Path copied'); } }, icon('copy'), 'Copy path'),
+        h('button', { class: 'btn danger', title: 'Delete this file (Del)', onclick: () => deleteVideo() }, icon('trash'), 'Delete'),
       )),
     h('div', { class: 'watch-desc' },
       h('div', { class: 'label' }, icon('tag'), 'Tags'),
@@ -619,10 +722,23 @@ async function renderWatch(id) {
   }
   player.el.focus({ preventScroll: true });
 
+  async function deleteVideo() {
+    let stopped = false;
+    // The player keeps the file open, and Windows can't delete open files.
+    const deleted = await deleteItems([item], { beforeDelete: () => { stopped = true; player.destroy(); } });
+    if (S.route?.name !== 'watch' || +S.route.arg !== id) return;
+    if (!deleted.length) { if (stopped) route(); return; }  // not deleted: bring the player back
+    const next = upNext.find((i) => i.kind === 'video' && i.id !== id);
+    if (next) { history.replaceState(null, '', `#/watch/${next.id}`); route(); }
+    else if (history.length > 1) history.back();
+    else navigate('', {}, { replace: true });
+  }
+
   const onKey = (e) => {
     if (isLightboxOpen()) return;
     if (e.key === '/' && !e.target.closest('input, textarea')) { e.preventDefault(); search.focus(); return; }
     if (e.key === 'g' && !e.target.closest('input, textarea')) { e.preventDefault(); editor.focusInput(); return; }
+    if (e.key === 'Delete' && !e.target.closest('input, textarea')) { e.preventDefault(); deleteVideo(); return; }
     player.onKey(e);
   };
   document.addEventListener('keydown', onKey);
@@ -780,7 +896,7 @@ async function renderSettings() {
     h('div', { class: 'shortcuts' },
       ...[['/', 'Focus search'], ['Space / K', 'Play / pause'], ['← / →', 'Seek 5s (video) · prev/next (image)'], ['J / L', 'Seek 10s'], ['↑ / ↓', 'Volume'],
         ['M', 'Mute'], ['C', 'Subtitles on/off'], ['F', 'Fullscreen'], ['T', 'Theater mode (video) · tag image (lightbox)'], ['I', 'Picture-in-picture · info panel (lightbox)'], ['< / >', 'Playback speed'],
-        ['0–9', 'Jump to 0–90%'], ['G', 'Add a tag (watch page)'], ['Shift+N / Shift+P', 'Next / previous video'], ['S', 'Slideshow (lightbox)'], ['+ / − / 0', 'Zoom (lightbox)'], ['Esc', 'Close lightbox']]
+        ['0–9', 'Jump to 0–90%'], ['G', 'Add a tag (watch page)'], ['Shift+N / Shift+P', 'Next / previous video'], ['S', 'Slideshow (lightbox)'], ['+ / − / 0', 'Zoom (lightbox)'], ['Del', 'Delete the file (watch page, lightbox) or the selection'], ['Esc', 'Close lightbox']]
         .map(([k, d]) => h('div', { class: 'shortcut' }, h('kbd', {}, k), h('span', {}, d))))));
 }
 
@@ -801,6 +917,7 @@ document.addEventListener('keydown', (e) => {
   if (S.route?.name === 'watch' || isLightboxOpen()) return;
   if (e.key === '/' && !e.target.closest('input, textarea, select')) { e.preventDefault(); search.focus(); }
   if (e.key === 'Escape' && document.body.classList.contains('select-mode') && !e.target.closest('input')) setSelectMode(false);
+  if (e.key === 'Delete' && document.body.classList.contains('select-mode') && S.selected.size && !e.target.closest('input, textarea, select')) $('#bulk-delete').click();
 });
 
 window.addEventListener('hashchange', route);

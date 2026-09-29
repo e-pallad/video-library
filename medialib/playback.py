@@ -237,6 +237,12 @@ class StreamRegistry:
                 if not procs:
                     self._procs.pop(key, None)
 
+    def stop(self, key):
+        with self._lock:
+            procs = self._procs.pop(key, [])
+        for p in procs:
+            _kill(p)
+
     def stop_all(self):
         with self._lock:
             procs = [p for ps in self._procs.values() for p in ps]

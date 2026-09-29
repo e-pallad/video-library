@@ -4,11 +4,13 @@ A local, YouTube-style library for your own video and image files. Point it at a
 all sub-folders, builds thumbnails, and lets you **tag** everything. Tags are reusable, are saved
 between restarts, and power the search.
 
-Everything runs on your computer. Nothing is uploaded, and your files are never moved or modified.
+Everything runs on your computer. Nothing is uploaded, and your files are never moved or modified, unless you
+delete one from the app.
 
 ## Features
 
 - **Library grid.** Videos and images are shown together with thumbnails, durations and a watched-progress bar. Hovering over a video plays a preview. The grid loads more as you scroll, and you can sort by date, name, length, size, views or shuffle.
+  - **Home is shuffled.** Each folder's items are spread evenly through the list, so the page isn't one folder after another. *Reshuffle* mixes it again. Going back from a video keeps the order, while opening Home again gives a new mix. The Shuffle sort works the same way on the other pages.
 - **Video player.** It plays MKV, AVI, HEVC and other formats by converting them on the fly (see *Supported formats*). A YouTube-style watch page with:
   - custom controls: seek bar with time preview, volume, speed 0.25–2×, loop, theater mode, fullscreen, picture-in-picture,
   - an autoplay-next toggle and an "Up next" list,
@@ -26,6 +28,7 @@ Everything runs on your computer. Nothing is uploaded, and your files are never 
   - **Tag manager:** rename, merge (rename onto an existing name), recolour, delete.
   - **Tag sidebar:** click a tag to filter; right-click to exclude it.
 - **Search.** Combine tags and text. See below.
+- **Deleting files.** Delete a file from the watch page, from the image viewer (trash button or `Del`), or select several items and press *Delete* (or `Del`). Files go to the Recycle Bin (the Trash on macOS/Linux). If a file can't go there, you're asked before it is deleted permanently. See *Deleting files* below.
 - **Rescans keep your tags.** A file that is renamed or moved inside your library keeps its tags. Its identity comes from its size plus a hash of its content, not its path. A deleted file is hidden, but its tags come back if the file returns.
 - Dark and light themes, keyboard shortcuts, and a layout that works on a phone.
 
@@ -62,7 +65,8 @@ python -m medialib --library "D:\Videos" [--library "E:\Photos"] [--port 8000] [
 ```
 
 Other options: `--data-dir PATH` changes where the database is stored. `--host 0.0.0.0` lets other
-devices on your network use it. Only do that on a network you trust, because there is no login.
+devices on your network use it. Only do that on a network you trust, because there is no login and anyone
+who can open the page can also delete files.
 
 ## Searching
 
@@ -81,6 +85,18 @@ Type in the search bar. All terms must match.
 When you type `#`, matching tags are suggested. Picking one turns it into a chip. Click a chip to
 switch between include and exclude. You can also click any tag chip on a card, the tag pills above
 the grid, or a tag in the sidebar.
+
+## Deleting files
+
+- You're always asked first. Deleted files go to the Recycle Bin (Windows) or the Trash (macOS/Linux), so you
+  can restore them there.
+- If the Recycle Bin/Trash can't be used for a file, the app tells you why and asks whether to delete it
+  permanently instead.
+- Network drives on Windows have no Recycle Bin, so for files there you're asked before they are deleted
+  permanently.
+- **Windows deletes a file permanently when it is larger than the Recycle Bin's size limit**, without
+  asking. That limit is set per drive in the Recycle Bin's properties.
+- Tags are kept. If you restore a file from the Recycle Bin and rescan, it comes back with its tags.
 
 ## Keyboard shortcuts
 
@@ -101,6 +117,7 @@ the grid, or a tag in the sidebar.
 | `Shift+N` / `Shift+P` | Next / previous video | |
 | `G` | Add a tag | |
 | `/` | Focus search | |
+| `Del` | Delete the video | Delete the image |
 | `Esc` | | Close |
 
 ## Supported formats
@@ -152,4 +169,5 @@ Layout:
 - `medialib/scanner.py`: folder scanning and move detection
 - `medialib/thumbs.py`: thumbnails and metadata
 - `medialib/playback.py`: codec probing, direct/remux/transcode decisions, streaming, subtitles
+- `medialib/trash.py`: deleting files (to the Recycle Bin/Trash via `send2trash`)
 - `medialib/static/`: the frontend (plain ES modules, no build step)

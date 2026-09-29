@@ -28,7 +28,7 @@ SORTS = {
     "most_viewed": "m.view_count DESC, m.last_viewed_at DESC, m.id DESC",
     "recent": "m.last_viewed_at IS NULL, m.last_viewed_at DESC, m.id DESC",
     "added": "m.added_at DESC, m.id DESC",
-    "random": None,  # handled separately (seeded, so pagination is stable)
+    "random": None,  # ordered in Python by mixed_order() (seeded, so pagination is stable)
 }
 
 
@@ -66,7 +66,11 @@ def parse(q: str) -> ParsedQuery:
 
 def build_sql(q="", kind=None, sort="newest", limit=60, offset=0, seed=1,
               include_missing=False, watched=None):
-    """Return (sql, params, count_sql, count_params)."""
+    """Return (sql, params, count_sql, count_params, parsed).
+
+    For sort="random" the query instead returns the id, root and rel_path of every match,
+    unpaged: order them with mixed_order() and fetch the requested page by id.
+    """
     p = parse(q)
     kind = kind or p.kind
     where, params = [], []
@@ -105,13 +109,45 @@ def build_sql(q="", kind=None, sort="newest", limit=60, offset=0, seed=1,
         params += [like, like, like]
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+    count_sql = f"SELECT COUNT(*) FROM media m {where_sql}"
     if sort == "random":
-        seed = int(seed) % 2147483647 or 1
-        order = f"((m.id * {seed}) % 2147483647), m.id"
-    else:
-        order = SORTS.get(sort) or SORTS["newest"]
+        sql = f"SELECT m.id, m.root, m.rel_path FROM media m {where_sql}"
+        return sql, list(params), count_sql, list(params), p
 
+    order = SORTS.get(sort) or SORTS["newest"]
     cols = ", ".join(f"m.{c.strip()}" for c in MEDIA_COLUMNS.split(","))
     sql = f"SELECT {cols} FROM media m {where_sql} ORDER BY {order} LIMIT ? OFFSET ?"
-    count_sql = f"SELECT COUNT(*) FROM media m {where_sql}"
     return sql, params + [int(limit), int(offset)], count_sql, list(params), p
+
+
+def mixed_order(rows, seed):
+    """Ids of ``rows`` (id, root, rel_path) shuffled so that every folder is spread evenly.
+
+    A folder with n items gets one item in each n-th of the list, at a random spot inside it,
+    so the results don't come in runs from one folder. Positions only depend on the seed and
+    on the other items of the same folder, which keeps pages stable while scrolling.
+    """
+    folders = {}
+    for r in rows:
+        folder = r["rel_path"].replace("\\", "/").rpartition("/")[0]
+        folders.setdefault((r["root"], folder), []).append((_hash(seed, r["id"]), r["id"]))
+    keyed = []
+    for items in folders.values():
+        items.sort()
+        n = len(items)
+        # The hash's high bits pick the item's slot in its folder, its low bits the spot in the slot.
+        keyed += [((slot + (h & 0xFFFFF) / 0x100000) / n, media_id)
+                  for slot, (h, media_id) in enumerate(items)]
+    keyed.sort()
+    return [media_id for _, media_id in keyed]
+
+
+_M64 = (1 << 64) - 1
+
+
+def _hash(seed, value):
+    """Well-mixed 64-bit hash of two integers (splitmix64 finalizer)."""
+    x = (int(value) * 0x9E3779B97F4A7C15 + int(seed) * 0xD1B54A32D192ED03) & _M64
+    x = ((x ^ (x >> 30)) * 0xBF58476D1CE4E5B9) & _M64
+    x = ((x ^ (x >> 27)) * 0x94D049BB133111EB) & _M64
+    return x ^ (x >> 31)

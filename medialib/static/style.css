@@ -391,6 +391,7 @@ body.watching main { margin-left: 0; }
 .lb-btn:hover { background: rgba(255,255,255,.12); }
 .lb-btn.on { color: var(--accent-2); }
 .lb-btn:disabled { opacity: .25; cursor: default; }
+.lb-btn.danger:hover { color: #ff4e45; }
 .lb-interval { background: transparent; color: #fff; border: 1px solid rgba(255,255,255,.2); border-radius: 6px; height: 28px; }
 .lb-interval option { color: #000; }
 .lb-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; display: grid; place-items: center; touch-action: none; cursor: default; }

@@ -155,6 +155,15 @@ class Database:
         row = self.query_one(f"SELECT {MEDIA_COLUMNS} FROM media WHERE id = ?", (media_id,))
         return dict(row) if row else None
 
+    def get_media_many(self, media_ids):
+        """Rows for the given ids, in the same order."""
+        rows = {}
+        for chunk in _chunks(list(media_ids), 500):
+            marks = ",".join("?" * len(chunk))
+            for r in self.query(f"SELECT {MEDIA_COLUMNS} FROM media WHERE id IN ({marks})", chunk):
+                rows[r["id"]] = dict(r)
+        return [rows[i] for i in media_ids if i in rows]
+
     def get_media_path(self, media_id):
         row = self.query_one("SELECT path, missing FROM media WHERE id = ?", (media_id,))
         return (row["path"], bool(row["missing"])) if row else (None, True)
@@ -208,6 +217,14 @@ class Database:
             (json.dumps(info, separators=(",", ":")), info.get("duration"), info.get("width"),
              info.get("height"), media_id),
         )
+
+    def mark_deleted(self, media_id):
+        """Hide an item whose file was deleted from the app.
+
+        The row and its tags are kept like for any missing file, so restoring the file from the
+        Recycle Bin and rescanning brings it back tagged. Its thumbnail is rebuilt then.
+        """
+        self.execute("UPDATE media SET missing = 1, thumb_state = 'pending' WHERE id = ?", (media_id,))
 
     def related(self, media_id, limit=20):
         """Items sharing the most tags, topped up with items from the same folder."""
