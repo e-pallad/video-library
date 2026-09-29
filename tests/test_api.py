@@ -78,6 +78,27 @@ def test_related_and_detail(tmp_path, library):
         assert d["related"][0]["filename"] == "cat.webp"
 
 
+def test_related_never_mixes_videos_and_images(tmp_path, library):
+    make_video(library / "holiday" / "clip.mp4")
+    make_video(library / "holiday" / "other.mp4")
+    with client(tmp_path / "data") as c:
+        c.put("/api/settings", json={"roots": [str(library)]})
+        scan(c)
+        items = ids_by_name(c)
+        for n in ("clip.mp4", "beach.jpg", "sunset.png"):
+            c.put(f"/api/media/{items[n]}/tags", json={"tags": ["holiday"]})
+
+        video = c.get(f"/api/media/{items['clip.mp4']}").json()
+        assert [r["filename"] for r in video["related"]] == ["other.mp4"]  # not the tagged images
+        image = c.get(f"/api/media/{items['beach.jpg']}").json()
+        assert {r["kind"] for r in image["related"]} == {"image"}
+        assert image["related"][0]["filename"] == "sunset.png"
+
+        # Each listing type only returns its own kind, even for a query both kinds match.
+        assert set(ids_by_name(c, q="#holiday", type="video")) == {"clip.mp4"}
+        assert set(ids_by_name(c, q="#holiday", type="image")) == {"beach.jpg", "sunset.png"}
+
+
 def test_bad_input_and_security(tmp_path, library):
     with client(tmp_path / "data") as c:
         assert c.put("/api/settings", json={"roots": [str(tmp_path / "nope")]}).status_code == 400

@@ -168,16 +168,23 @@ export function tagEditor(item, { onChange, onTagClick } = {}) {
 
 const TOKEN = /(-)?(?:(tag|type|is):|(#))?(?:"([^"]*)"?|(\S+))/gi;
 
+// Same synonyms as search.py; "type:image" in the search bar switches to the Gallery.
+const KIND_WORDS = new Map(Object.entries({ video: 'video', movie: 'video', clip: 'video', vid: 'video',
+  image: 'image', photo: 'image', picture: 'image', pic: 'image', img: 'image' }));
+
 export function parseQuery(q) {
   const chips = [], rest = [];
+  let kind = null;
   for (const m of (q || '').matchAll(TOKEN)) {
     const prefix = (m[2] || m[3] || '').toLowerCase();
     const value = (m[4] ?? m[5] ?? '').trim();
     if (!value) continue;
-    if (prefix === 'tag' || prefix === '#') chips.push({ name: value, exclude: !!m[1] });
+    const k = (prefix === 'type' || prefix === 'is') && KIND_WORDS.get(value.toLowerCase().replace(/s+$/, ''));
+    if (k) kind = k;
+    else if (prefix === 'tag' || prefix === '#') chips.push({ name: value, exclude: !!m[1] });
     else rest.push(m[0]);
   }
-  return { chips, text: rest.join(' ') };
+  return { chips, text: rest.join(' '), kind };
 }
 
 export function buildQuery(chips, text) {
